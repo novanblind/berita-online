@@ -10,9 +10,10 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -34,7 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class MainActivity extends Activity implements TextToSpeech.OnInitListener {
+public class MainActivity extends Activity {
 
     private static final String TXT_SALIN = "Salin Berita";
     private static final String TXT_KEMBALI = "Kembali";
@@ -49,8 +50,6 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
 
     private Handler mainHandler;
     private ExecutorService executor;
-    private TextToSpeech tts;
-    private boolean ttsReady = false;
 
     // Model Data
     public static class Category {
@@ -103,7 +102,6 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
 
         mainHandler = new Handler(Looper.getMainLooper());
         executor = Executors.newCachedThreadPool();
-        tts = new TextToSpeech(this, this);
 
         initPortalsData();
 
@@ -121,7 +119,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         box.addView(title);
 
         TextView info = new TextView(this);
-        info.setText("CNN Indonesia • Detikcom • Kompas.com\nDilengkapi pembacaan suara otomatis dan naskah lengkap.");
+        info.setText("CNN Indonesia • Detikcom • Kompas.com\nDibacakan otomatis melalui mesin pembaca layar aktif.");
         info.setTextSize(15);
         info.setTextColor(Color.DKGRAY);
         info.setGravity(Gravity.CENTER);
@@ -140,7 +138,6 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
 
         setContentView(box);
 
-        // Buka menu pilihan portal secara otomatis saat aplikasi mulai
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -187,29 +184,8 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     // ------------------------------------------------------------
-    // Utilitas Suara & Dialog
+    // Utilitas Pembaca Layar Native & Toast
     // ------------------------------------------------------------
-
-    @Override
-    public void onInit(int status) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(new Locale("id", "ID"));
-            ttsReady = true;
-        }
-    }
-
-    private void speakText(String text) {
-        if (tts != null && ttsReady && text != null && !text.isEmpty()) {
-            tts.stop();
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "NEWS_TTS");
-        }
-    }
-
-    private void stopSpeak() {
-        if (tts != null && ttsReady) {
-            tts.stop();
-        }
-    }
 
     private void notifyUser(final String msg) {
         mainHandler.post(new Runnable() {
@@ -218,6 +194,23 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
                 Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    private void announceToScreenReader(final View targetView, final String text) {
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (isFinishing()) return;
+                AccessibilityManager am = (AccessibilityManager) getSystemService(Context.ACCESSIBILITY_SERVICE);
+                if (am != null && am.isEnabled()) {
+                    if (targetView != null) {
+                        targetView.announceForAccessibility(text);
+                    } else if (getWindow() != null && getWindow().getDecorView() != null) {
+                        getWindow().getDecorView().announceForAccessibility(text);
+                    }
+                }
+            }
+        }, 400);
     }
 
     private void copyToClipboard(String text) {
@@ -329,7 +322,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     // ------------------------------------------------------------
-    // Dialog 4: Isi Berita Lengkap & Otomatis Dibacakan Suara
+    // Dialog 4: Isi Berita Lengkap (Dibacakan Pembaca Layar)
     // ------------------------------------------------------------
     private void showDetailActionDialog(final NewsItem item) {
         if (isFinishing()) return;
@@ -352,26 +345,28 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         builder.setNegativeButton(TXT_KEMBALI, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                stopSpeak();
                 showNewsListDialog();
             }
         });
 
-        AlertDialog dlg = builder.create();
-        dlg.setOnDismissListener(new DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(DialogInterface dialog) {
-                stopSpeak();
-            }
-        });
+        final AlertDialog dlg = builder.create();
         dlg.show();
 
+        // Fokuskan teks isi berita dan instruksikan mesin suara pembaca layar untuk membacakannya
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                speakText(fullText);
+                TextView msgView = dlg.findViewById(android.R.id.message);
+                if (msgView != null) {
+                    msgView.setFocusable(true);
+                    msgView.requestFocus();
+                    msgView.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
+                    announceToScreenReader(msgView, fullText);
+                } else {
+                    announceToScreenReader(dlg.getWindow().getDecorView(), fullText);
+                }
             }
-        }, 500);
+        }, 300);
     }
 
     // ------------------------------------------------------------
@@ -474,7 +469,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     // ------------------------------------------------------------
-    // Mesin HTTP Koneksi Native (Mendukung Redirect & User-Agent)
+    // Mesin HTTP Koneksi Native
     // ------------------------------------------------------------
     private interface HttpCallback {
         void onResult(boolean ok, String body);
@@ -543,213 +538,4 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
 
                 final boolean finalSuccess = success;
                 final String finalResult = resultBody;
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        callback.onResult(finalSuccess, finalResult);
-                    }
-                });
-            }
-        });
-    }
-
-    // ------------------------------------------------------------
-    // Parsing Berita (RSS XML & Scraping HTML)
-    // ------------------------------------------------------------
-    private List<NewsItem> parseNews(String body, String srcName) {
-        List<NewsItem> list = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        if (body == null || body.isEmpty()) return list;
-
-        // 1. Umpan RSS XML
-        if (body.contains("<item>") || body.contains("<ITEM>")) {
-            Pattern pItem = Pattern.compile("<item[^>]*>(.*?)</item>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-            Matcher mItem = pItem.matcher(body);
-            while (mItem.find() && list.size() < MAX_NEWS) {
-                String it = mItem.group(1);
-                String title = cleanTag(getTag(it, "title"));
-                String link = cleanTag(getTag(it, "link"));
-                String desc = cleanTag(getTag(it, "description"));
-                String date = cleanTag(getTag(it, "pubDate"));
-
-                if (!title.isEmpty() && !link.isEmpty() && !seen.contains(link)) {
-                    seen.add(link);
-                    NewsItem item = new NewsItem();
-                    item.title = title;
-                    item.link = link;
-                    item.desc = desc;
-                    item.date = date;
-                    item.src = srcName;
-                    list.add(item);
-                }
-            }
-            if (!list.isEmpty()) return list;
-        }
-
-        // 2. Scraping HTML Web Langsung
-        if ("Detik".equals(srcName) || body.contains("detik.com")) {
-            Pattern pDetik = Pattern.compile("<a[^>]+href=\"(https?://[a-z0-9\\.\\-]+detik\\.com/[^\"]*?/d-\\d+/[^\"]*)\"[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-            Matcher mDetik = pDetik.matcher(body);
-            while (mDetik.find() && list.size() < MAX_NEWS) {
-                String href = mDetik.group(1);
-                String titleRaw = mDetik.group(2);
-                String title = cleanTag(titleRaw);
-                String cleanLink = href.contains("?") ? href.substring(0, href.indexOf("?")) : href;
-
-                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkParagraph(title)) {
-                    seen.add(cleanLink);
-                    NewsItem item = new NewsItem();
-                    item.title = title;
-                    item.link = cleanLink;
-                    item.desc = title;
-                    item.src = "Detik";
-                    list.add(item);
-                }
-            }
-        } else if ("Kompas".equals(srcName) || body.contains("kompas.com")) {
-            Pattern pKompas = Pattern.compile("<a[^>]+href=\"(https?://[a-z0-9\\.\\-]+kompas\\.com/read/\\d+/[^\"]*)\"[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-            Matcher mKompas = pKompas.matcher(body);
-            while (mKompas.find() && list.size() < MAX_NEWS) {
-                String href = mKompas.group(1);
-                String titleRaw = mKompas.group(2);
-                String title = cleanTag(titleRaw);
-                String cleanLink = href.contains("?") ? href.substring(0, href.indexOf("?")) : href;
-
-                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkParagraph(title)) {
-                    seen.add(cleanLink);
-                    NewsItem item = new NewsItem();
-                    item.title = title;
-                    item.link = cleanLink;
-                    item.desc = title;
-                    item.src = "Kompas";
-                    list.add(item);
-                }
-            }
-        }
-
-        return list;
-    }
-
-    private String getTag(String block, String name) {
-        Pattern p = Pattern.compile("<" + name + "[^>]*>(.*?)</" + name + ">", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(block);
-        return m.find() ? m.group(1) : "";
-    }
-
-    // ------------------------------------------------------------
-    // Parsing Isi Artikel Bersih
-    // ------------------------------------------------------------
-    private String extractFullArticle(String url, String html) {
-        if (html == null || html.isEmpty()) return "";
-
-        html = html.replaceAll("(?i)<script[\\s\\S]*?</script>", "");
-        html = html.replaceAll("(?i)<style[\\s\\S]*?</style>", "");
-
-        String contentBlock = html;
-
-        if (url.contains("cnnindonesia.com")) {
-            int start = indexOfPattern(html, "(?i)<div[^>]*class=\"[^\"]*detail[-_]text[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*tag[-_]|class=\"[^\"]*author|class=\"[^\"]*share|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
-            }
-        } else if (url.contains("detik.com")) {
-            int start = indexOfPattern(html, "(?i)class=\"[^\"]*(detail__body-text|itp_bodycontent|detail[-_]text|detail__body)[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*(detail__tag|detail__comment|tag[-_])|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
-            }
-        } else if (url.contains("kompas.com")) {
-            int start = indexOfPattern(html, "(?i)class=\"[^\"]*(read__content|article__content|detail[-_]text)[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*(read__tag|read__author|read__comment|tag[-_])|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
-            }
-        }
-
-        List<String> paras = collectParagraphs(contentBlock);
-        if (paras.isEmpty()) {
-            paras = collectParagraphs(html);
-        }
-
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < paras.size(); i++) {
-            sb.append(paras.get(i));
-            if (i < paras.size() - 1) sb.append("\n\n");
-        }
-        return sb.toString();
-    }
-
-    private int indexOfPattern(String text, String regex) {
-        Matcher m = Pattern.compile(regex).matcher(text);
-        return m.find() ? m.start() : -1;
-    }
-
-    private List<String> collectParagraphs(String block) {
-        List<String> list = new ArrayList<>();
-        Pattern p = Pattern.compile("<p[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(block);
-        while (m.find()) {
-            String inner = m.group(1);
-            inner = cleanTag(inner);
-            if (!isJunkParagraph(inner) && inner.length() > 20) {
-                list.add(inner);
-            }
-        }
-        return list;
-    }
-
-    private boolean isJunkParagraph(String text) {
-        String lower = text.toLowerCase(Locale.ROOT);
-        return text.length() <= 15
-                || lower.startsWith("baca juga")
-                || lower.startsWith("pilihan redaksi")
-                || lower.startsWith("simak video")
-                || lower.startsWith("dapatkan update")
-                || lower.startsWith("(sumber")
-                || lower.startsWith("iklan")
-                || lower.startsWith("advertisement")
-                || lower.contains("scroll to continue")
-                || lower.contains("lanjutkan membaca")
-                || lower.startsWith("lihat juga")
-                || lower.startsWith("tonton juga")
-                || lower.contains("gambas")
-                || lower.startsWith("tag:")
-                || lower.startsWith("komentar");
-    }
-
-    private String cleanTag(String txt) {
-        if (txt == null) return "";
-        txt = txt.replaceAll("(?i)<!\\[CDATA\\[(.*?)\\]\\]>", "$1");
-        txt = txt.replaceAll("<[^>]*>", "");
-        txt = decodeEntities(txt);
-        txt = txt.replaceAll("[\\r\\n]+", " ");
-        return txt.trim();
-    }
-
-    private String decodeEntities(String txt) {
-        txt = txt.replace("&nbsp;", " ");
-        txt = txt.replace("&quot;", "\"");
-        txt = txt.replace("&apos;", "'");
-        txt = txt.replace("&#39;", "'");
-        txt = txt.replace("&lt;", "<");
-        txt = txt.replace("&gt;", ">");
-        txt = txt.replace("&amp;", "&");
-        return txt;
-    }
-
-    @Override
-    protected void onDestroy() {
-        stopSpeak();
-        if (tts != null) {
-            tts.shutdown();
-        }
-        if (executor != null) {
-            executor.shutdown();
-        }
-        super.onDestroy();
-    }
-}
+                mainHandler.post(new
