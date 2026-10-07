@@ -21,6 +21,9 @@ import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.CookieHandler;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -99,6 +102,10 @@ public class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
+
+        try {
+            CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
+        } catch (Exception ignored) {}
 
         mainHandler = new Handler(Looper.getMainLooper());
         executor = Executors.newCachedThreadPool();
@@ -219,7 +226,7 @@ public class MainActivity extends Activity {
             ClipData clip = ClipData.newPlainText("Berita", text);
             if (cm != null) {
                 cm.setPrimaryClip(clip);
-                notifyUser("Isi berita lengkap berhasil disalin!");
+                notifyUser("Inti berita berhasil disalin!");
             }
         } catch (Exception e) {
             notifyUser("Gagal menyalin berita.");
@@ -322,7 +329,7 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------
-    // Dialog 4: Isi Berita Lengkap (Dibacakan Pembaca Layar)
+    // Dialog 4: Isi Berita Lengkap (Murni Inti Berita Saja)
     // ------------------------------------------------------------
     private void showDetailActionDialog(final NewsItem item) {
         if (isFinishing()) return;
@@ -332,13 +339,14 @@ public class MainActivity extends Activity {
                 : (item.desc != null && !item.desc.isEmpty() ? item.desc : "(Konten tidak tersedia.)");
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Isi Berita Lengkap");
+        // Hapus setTitle agar pembaca layar langsung membaca naskah artikel berita dari kalimat pertama
         builder.setMessage(fullText);
 
         builder.setPositiveButton(TXT_SALIN, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                copyToClipboard(fullText + "\n\nSumber: " + item.link);
+                // Menyalin murni naskah berita saja tanpa tambahan "Sumber:"
+                copyToClipboard(fullText);
             }
         });
 
@@ -352,7 +360,6 @@ public class MainActivity extends Activity {
         final AlertDialog dlg = builder.create();
         dlg.show();
 
-        // Fokuskan teks isi berita dan instruksikan mesin suara pembaca layar untuk membacakannya
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -362,7 +369,7 @@ public class MainActivity extends Activity {
                     msgView.requestFocus();
                     msgView.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
                     announceToScreenReader(msgView, fullText);
-                } else {
+                } else if (dlg.getWindow() != null && dlg.getWindow().getDecorView() != null) {
                     announceToScreenReader(dlg.getWindow().getDecorView(), fullText);
                 }
             }
@@ -373,47 +380,56 @@ public class MainActivity extends Activity {
     // Jaringan: Pengambil Isi Berita Lengkap
     // ------------------------------------------------------------
     private void loadFullArticleAndShow(final NewsItem item) {
-        if (item.fullContent != null && !item.fullContent.isEmpty()) {
+        if (item.fullContent != null && item.fullContent.length() > (item.title.length() + 30)) {
             showDetailActionDialog(item);
             return;
         }
 
         notifyUser("Mengambil isi berita lengkap...");
 
-        String fetchUrl = prepareArticleUrl(item.link);
+        String fetchUrl = item.link;
+        if (fetchUrl.contains("kompas.com") && !fetchUrl.contains("page=all")) {
+            fetchUrl = fetchUrl + (fetchUrl.contains("?") ? "&page=all" : "?page=all");
+        }
 
         httpFetch(fetchUrl, MAX_TRY_ARTICLE, new HttpCallback() {
             @Override
             public void onResult(boolean ok, String body) {
-                if (ok && body != null) {
-                    String extracted = extractFullArticle(item.link, body);
-                    if (extracted.length() < item.desc.length()) {
-                        extracted = item.desc;
-                    }
-                    if (!extracted.isEmpty()) {
+                if (ok && body != null && !body.isEmpty()) {
+                    String extracted = extractFullArticle(body);
+                    if (extracted.length() > (item.title.length() + 30)) {
                         item.fullContent = extracted;
+                        showDetailActionDialog(item);
+                        return;
                     }
-                } else {
-                    notifyUser("Gagal memuat berita lengkap. Menampilkan ringkasan.");
-                    item.fullContent = item.desc;
                 }
-                showDetailActionDialog(item);
+
+                if (!fetchUrl.equals(item.link)) {
+                    httpFetch(item.link, 2, new HttpCallback() {
+                        @Override
+                        public void onResult(boolean ok2, String body2) {
+                            if (ok2 && body2 != null && !body2.isEmpty()) {
+                                String extracted2 = extractFullArticle(body2);
+                                if (extracted2.length() > (item.title.length() + 30)) {
+                                    item.fullContent = extracted2;
+                                    showDetailActionDialog(item);
+                                    return;
+                                }
+                            }
+                            handleArticleFallback(item);
+                        }
+                    });
+                } else {
+                    handleArticleFallback(item);
+                }
             }
         });
     }
 
-    private String prepareArticleUrl(String url) {
-        if (url == null) return "";
-        if (url.contains("detik.com")) {
-            if (!url.contains("single=1")) {
-                return url + (url.contains("?") ? "&single=1" : "?single=1");
-            }
-        } else if (url.contains("kompas.com")) {
-            if (!url.contains("page=all")) {
-                return url + (url.contains("?") ? "&page=all" : "?page=all");
-            }
-        }
-        return url;
+    private void handleArticleFallback(NewsItem item) {
+        notifyUser("Menampilkan ringkasan berita.");
+        item.fullContent = (item.desc != null && item.desc.length() > item.title.length()) ? cleanPrefix(item.desc) : item.title;
+        showDetailActionDialog(item);
     }
 
     // ------------------------------------------------------------
@@ -444,13 +460,13 @@ public class MainActivity extends Activity {
             public void onResult(boolean ok, String body) {
                 if (myRequest != requestCounter) return;
 
-                if (ok && body != null) {
+                if (ok && body != null && !body.isEmpty()) {
                     List<NewsItem> list = parseNews(body, p.src);
                     if (!list.isEmpty()) {
                         listCache.put(cacheKey, new CacheEntry(System.currentTimeMillis(), list));
                         currentNewsList = list;
                         notifyUser("Berhasil memuat " + list.size() + " berita " + c.name + ".");
-                        showNewsListDialog() ;
+                        showNewsListDialog();
                         return;
                     }
                     notifyUser("Tidak ada berita yang ditemukan dalam kategori ini.");
@@ -488,7 +504,7 @@ public class MainActivity extends Activity {
                         int responseCode = 0;
                         String finalHtml = null;
 
-                        for (int hop = 0; hop < 5; hop++) {
+                        for (int hop = 0; hop < 6; hop++) {
                             URL u = new URL(curUrl);
                             HttpURLConnection conn = (HttpURLConnection) u.openConnection();
                             conn.setRequestMethod("GET");
@@ -504,7 +520,11 @@ public class MainActivity extends Activity {
                             if (responseCode == 301 || responseCode == 302 || responseCode == 303 || responseCode == 307 || responseCode == 308) {
                                 String newLoc = conn.getHeaderField("Location");
                                 if (newLoc != null && !newLoc.isEmpty()) {
-                                    curUrl = newLoc;
+                                    try {
+                                        curUrl = new URL(new URL(curUrl), newLoc).toString();
+                                    } catch (Exception e) {
+                                        curUrl = newLoc;
+                                    }
                                 } else {
                                     break;
                                 }
@@ -523,13 +543,12 @@ public class MainActivity extends Activity {
                             }
                         }
 
-                        if (responseCode == 200 && finalHtml != null) {
+                        if (responseCode == 200 && finalHtml != null && !finalHtml.isEmpty()) {
                             success = true;
                             resultBody = finalHtml;
                             break;
                         }
-                    } catch (Exception ignored) {
-                    }
+                    } catch (Exception ignored) {}
 
                     try {
                         Thread.sleep(600);
@@ -556,6 +575,7 @@ public class MainActivity extends Activity {
         Set<String> seen = new HashSet<>();
         if (body == null || body.isEmpty()) return list;
 
+        // 1. Umpan RSS XML
         if (body.contains("<item>") || body.contains("<ITEM>")) {
             Pattern pItem = Pattern.compile("<item[^>]*>(.*?)</item>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher mItem = pItem.matcher(body);
@@ -570,7 +590,7 @@ public class MainActivity extends Activity {
                     seen.add(link);
                     NewsItem item = new NewsItem();
                     item.title = title;
-                    item.link = link;
+                    item.link = link.replace("http://", "https://");
                     item.desc = desc;
                     item.date = date;
                     item.src = srcName;
@@ -580,6 +600,7 @@ public class MainActivity extends Activity {
             if (!list.isEmpty()) return list;
         }
 
+        // 2. Scraping HTML Web Langsung
         if ("Detik".equals(srcName) || body.contains("detik.com")) {
             Pattern pDetik = Pattern.compile("<a[^>]+href=\"(https?://[a-z0-9\\.\\-]+detik\\.com/[^\"]*?/d-\\d+/[^\"]*)\"[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher mDetik = pDetik.matcher(body);
@@ -587,9 +608,9 @@ public class MainActivity extends Activity {
                 String href = mDetik.group(1);
                 String titleRaw = mDetik.group(2);
                 String title = cleanTag(titleRaw);
-                String cleanLink = href.contains("?") ? href.substring(0, href.indexOf("?")) : href;
+                String cleanLink = (href.contains("?") ? href.substring(0, href.indexOf("?")) : href).replace("http://", "https://");
 
-                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkParagraph(title)) {
+                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkLine(title)) {
                     seen.add(cleanLink);
                     NewsItem item = new NewsItem();
                     item.title = title;
@@ -606,9 +627,9 @@ public class MainActivity extends Activity {
                 String href = mKompas.group(1);
                 String titleRaw = mKompas.group(2);
                 String title = cleanTag(titleRaw);
-                String cleanLink = href.contains("?") ? href.substring(0, href.indexOf("?")) : href;
+                String cleanLink = (href.contains("?") ? href.substring(0, href.indexOf("?")) : href).replace("http://", "https://");
 
-                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkParagraph(title)) {
+                if (title.length() > 15 && !seen.contains(cleanLink) && !isJunkLine(title)) {
                     seen.add(cleanLink);
                     NewsItem item = new NewsItem();
                     item.title = title;
@@ -630,42 +651,99 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------
-    // Parsing Isi Artikel Bersih
+    // Parsing MURNI Inti Naskah Berita Saja
     // ------------------------------------------------------------
-    private String extractFullArticle(String url, String html) {
+    private String extractFullArticle(String html) {
         if (html == null || html.isEmpty()) return "";
 
-        html = html.replaceAll("(?i)<script[\\s\\S]*?</script>", "");
-        html = html.replaceAll("(?i)<style[\\s\\S]*?</style>", "");
+        String lower = html.toLowerCase(Locale.ROOT);
 
-        String contentBlock = html;
+        // 1. Deteksi letak wadah utama artikel
+        String[] containerMarkers = {
+            "detail__body-text",
+            "itp_bodycontent",
+            "read__content",
+            "article__content",
+            "detail-text",
+            "detail_text"
+        };
 
-        if (url.contains("cnnindonesia.com")) {
-            int start = indexOfPattern(html, "(?i)<div[^>]*class=\"[^\"]*detail[-_]text[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*tag[-_]|class=\"[^\"]*author|class=\"[^\"]*share|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
-            }
-        } else if (url.contains("detik.com")) {
-            int start = indexOfPattern(html, "(?i)class=\"[^\"]*(detail__body-text|itp_bodycontent|detail[-_]text|detail__body)[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*(detail__tag|detail__comment|tag[-_])|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
-            }
-        } else if (url.contains("kompas.com")) {
-            int start = indexOfPattern(html, "(?i)class=\"[^\"]*(read__content|article__content|detail[-_]text)[^\"]*\"");
-            if (start != -1) {
-                String sub = html.substring(start);
-                int end = indexOfPattern(sub, "(?i)class=\"[^\"]*(read__tag|read__author|read__comment|tag[-_])|<footer");
-                contentBlock = (end != -1) ? sub.substring(0, end) : sub;
+        int startPos = -1;
+        for (String m : containerMarkers) {
+            int idx = lower.indexOf(m);
+            if (idx != -1) {
+                int tagStart = html.lastIndexOf('<', idx);
+                if (tagStart != -1) {
+                    startPos = tagStart;
+                    break;
+                }
             }
         }
 
-        List<String> paras = collectParagraphs(contentBlock);
-        if (paras.isEmpty()) {
-            paras = collectParagraphs(html);
+        String contentBlock = (startPos != -1) ? html.substring(startPos) : html;
+
+        // 2. Batasi titik akhir artikel jika wadah utama ditemukan
+        if (startPos != -1) {
+            String lowerBlock = contentBlock.toLowerCase(Locale.ROOT);
+            String[] endMarkers = {
+                "class=\"detail__tag",
+                "class='detail__tag",
+                "class=\"read__tag",
+                "class='read__tag",
+                "class=\"detail__comment",
+                "id=\"comment",
+                "<footer"
+            };
+            int endPos = contentBlock.length();
+            for (String em : endMarkers) {
+                int eIdx = lowerBlock.indexOf(em);
+                if (eIdx != -1 && eIdx > 50 && eIdx < endPos) {
+                    endPos = eIdx;
+                }
+            }
+            contentBlock = contentBlock.substring(0, endPos);
+        }
+
+        // 3. Ekstrak seluruh naskah paragraf <p> ... </p>
+        List<String> paras = new ArrayList<>();
+        Pattern pPattern = Pattern.compile("<p[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+        Matcher m = pPattern.matcher(contentBlock);
+        while (m.find()) {
+            String cleanP = cleanTag(m.group(1));
+
+            // Berhenti jika mencapai widget belanja / rekomendasi berita
+            if (isTerminalJunk(cleanP)) {
+                break;
+            }
+
+            // Bersihkan awalan nama wartawan / nama portal di paragraf pertama
+            if (paras.isEmpty()) {
+                cleanP = cleanPrefix(cleanP);
+            }
+
+            if (cleanP.length() > 20 && !isJunkLine(cleanP)) {
+                paras.add(cleanP);
+            }
+        }
+
+        // Cadangan darurat jika dalam wadah tidak ditemukan paragraf
+        if (paras.isEmpty() && startPos != -1) {
+            Matcher mFallback = pPattern.matcher(html);
+            while (mFallback.find()) {
+                String cleanP = cleanTag(mFallback.group(1));
+
+                if (isTerminalJunk(cleanP)) {
+                    break;
+                }
+
+                if (paras.isEmpty()) {
+                    cleanP = cleanPrefix(cleanP);
+                }
+
+                if (cleanP.length() > 25 && !isJunkLine(cleanP)) {
+                    paras.add(cleanP);
+                }
+            }
         }
 
         StringBuilder sb = new StringBuilder();
@@ -676,28 +754,44 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    private int indexOfPattern(String text, String regex) {
-        Matcher m = Pattern.compile(regex).matcher(text);
-        return m.find() ? m.start() : -1;
+    private String cleanPrefix(String txt) {
+        if (txt == null) return "";
+        // Detik byline: "Kris FW - detikSepakbola  "
+        txt = txt.replaceAll("(?i)^[a-z0-9\\s\\.,]+-\\s*detik[a-z]+\\s*", "");
+        // Kompas byline: "JAKARTA, KOMPAS.com - "
+        txt = txt.replaceAll("(?i)^[a-z0-9\\s\\.,]*kompas\\.com\\s*-\\s*", "");
+        // CNN byline: "Jakarta, CNN Indonesia -- "
+        txt = txt.replaceAll("(?i)^[a-z0-9\\s\\.,]*cnn\\s+indonesia\\s*--\\s*", "");
+        txt = txt.replaceAll("(?i)^[a-z0-9\\s\\.,]*cnn\\s+indonesia\\s*-\\s*", "");
+        // Kota prefix umum: "Jakarta - "
+        txt = txt.replaceAll("(?i)^jakarta\\s*-\\s*", "");
+        return txt.trim();
     }
 
-    private List<String> collectParagraphs(String block) {
-        List<String> list = new ArrayList<>();
-        Pattern p = Pattern.compile("<p[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(block);
-        while (m.find()) {
-            String inner = m.group(1);
-            inner = cleanTag(inner);
-            if (!isJunkParagraph(inner) && inner.length() > 20) {
-                list.add(inner);
-            }
-        }
-        return list;
-    }
-
-    private boolean isJunkParagraph(String text) {
+    private boolean isTerminalJunk(String text) {
         String lower = text.toLowerCase(Locale.ROOT);
-        return text.length() <= 15
+        return lower.contains("ide belanja")
+                || lower.contains("pilihan produk terbaik")
+                || lower.contains("anda menyukai artikel ini")
+                || lower.contains("dapatkan informasi dan insight")
+                || lower.contains("bayangkan seorang anak indonesia")
+                || lower.contains("mari hadirkan akses literasi")
+                || lower.contains("jagatliterasi")
+                || lower.contains("simak video")
+                || lower.contains("rekomendasi produk")
+                || lower.contains("artikel terkait")
+                || lower.contains("berita terkait")
+                || lower.contains("berita populer")
+                || lower.contains("pilihan redaksi")
+                || lower.contains("baca artikel")
+                || lower.contains("daftar detikers")
+                || lower.contains("copyright")
+                || lower.matches("(?i)^#\\d+.*");
+    }
+
+    private boolean isJunkLine(String text) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        return text.length() <= 20
                 || lower.startsWith("baca juga")
                 || lower.startsWith("pilihan redaksi")
                 || lower.startsWith("simak video")
@@ -711,7 +805,15 @@ public class MainActivity extends Activity {
                 || lower.startsWith("tonton juga")
                 || lower.contains("gambas")
                 || lower.startsWith("tag:")
-                || lower.startsWith("komentar");
+                || lower.startsWith("komentar")
+                || lower.startsWith("copyright")
+                || lower.contains("daftar detikers")
+                || lower.startsWith("masuk")
+                || lower.contains("userlogin")
+                || lower.contains("this.open")
+                || lower.contains("@mouseenter")
+                || lower.contains("function(")
+                || lower.startsWith("var ");
     }
 
     private String cleanTag(String txt) {
@@ -728,6 +830,13 @@ public class MainActivity extends Activity {
         txt = txt.replace("&quot;", "\"");
         txt = txt.replace("&apos;", "'");
         txt = txt.replace("&#39;", "'");
+        txt = txt.replace("&ldquo;", "\"");
+        txt = txt.replace("&rdquo;", "\"");
+        txt = txt.replace("&lsquo;", "'");
+        txt = txt.replace("&rsquo;", "'");
+        txt = txt.replace("&hellip;", "...");
+        txt = txt.replace("&mdash;", "—");
+        txt = txt.replace("&ndash;", "–");
         txt = txt.replace("&lt;", "<");
         txt = txt.replace("&gt;", ">");
         txt = txt.replace("&amp;", "&");
