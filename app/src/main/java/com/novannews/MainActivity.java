@@ -387,10 +387,11 @@ public class MainActivity extends Activity {
 
         notifyUser("Mengambil isi berita lengkap...");
 
-        String fetchUrl = item.link;
-        if (fetchUrl.contains("kompas.com") && !fetchUrl.contains("page=all")) {
-            fetchUrl = fetchUrl + (fetchUrl.contains("?") ? "&page=all" : "?page=all");
+        String targetUrl = item.link;
+        if (targetUrl.contains("kompas.com") && !targetUrl.contains("page=all")) {
+            targetUrl = targetUrl + (targetUrl.contains("?") ? "&page=all" : "?page=all");
         }
+        final String fetchUrl = targetUrl;
 
         httpFetch(fetchUrl, MAX_TRY_ARTICLE, new HttpCallback() {
             @Override
@@ -426,7 +427,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void handleArticleFallback(NewsItem item) {
+    private void handleArticleFallback(final NewsItem item) {
         notifyUser("Menampilkan ringkasan berita.");
         item.fullContent = (item.desc != null && item.desc.length() > item.title.length()) ? cleanPrefix(item.desc) : item.title;
         showDetailActionDialog(item);
