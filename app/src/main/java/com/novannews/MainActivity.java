@@ -42,6 +42,8 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     private static final String TXT_TUTUP = "Tutup";
 
     private static final int MAX_NEWS = 50;
+    private static final int MAX_TRY_LIST = 3;
+    private static final int MAX_TRY_ARTICLE = 3;
     private static final int TIMEOUT_MS = 8000;
     private static final long CACHE_DURATION_MS = 5 * 60 * 1000; // 5 menit
 
@@ -105,7 +107,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
 
         initPortalsData();
 
-        // Tampilan Layar Utama (Induk)
+        // Tampilan Layar Utama
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
@@ -364,7 +366,6 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         });
         dlg.show();
 
-        // Langsung bacakan isi berita saja tanpa judul
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
